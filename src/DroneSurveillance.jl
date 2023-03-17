@@ -16,7 +16,7 @@ export
     PerfectCam,
     DroneSurveillanceMDP
 
-export DSAgentStrat, DSTransitionModel, DSPerfectModel, DSApproximateModel, DSLinModel, DSLinCalModel, DSConformalizedModel
+export DSAgentStrat, DSTransitionModel, DSPerfectModel, DSLinModel, DSLinCalModel, DSConformalizedModel
 
 const DSPos = SVector{2, Int64}
 
@@ -87,9 +87,9 @@ end
 
 include("states.jl")
 include("actions.jl")
+include("models.jl")
 include("transition.jl")
 include("visualization.jl")
-include("models.jl")
 
 function __init__()
     # When loaded, set default show backend

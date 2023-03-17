@@ -66,7 +66,7 @@ end
 
 function predict(conf_model::DSConformalizedModel, s::DSState, a::DSPos, λ::Real; ϵ_prune=1e-4)
     lin_model = conf_model.lin_model
-    nx, ny = model.size
+    nx, ny = lin_model.size
     states = [(Δx, Δy) for Δx in -nx:nx,
                            Δy in -ny:ny][:]
 

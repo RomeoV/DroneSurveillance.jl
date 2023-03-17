@@ -1,6 +1,7 @@
 import Base: product
 import Base
-using LinearAlgebra: normalize, normalize!
+import LinearAlgebra: normalize, normalize!
+import DroneSurveillance: DSAgentStrat, DSTransitionModel, DSPerfectModel, DSLinModel, DSLinCalModel, DSConformalizedModel
 
 struct DSAgentStrat
     p :: Real
