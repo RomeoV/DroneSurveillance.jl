@@ -1,12 +1,7 @@
 import Base: product
 import Base
 import LinearAlgebra: normalize, normalize!
-import DroneSurveillance: DSAgentStrat, DSTransitionModel, DSPerfectModel, DSLinModel, DSLinCalModel, DSConformalizedModel
-
-struct DSAgentStrat
-    p :: Real
-end
-should_do_perfect_agent_step(agent::DSAgentStrat) = rand() <= agent.p
+import DroneSurveillance: DSTransitionModel, DSPerfectModel, DSLinModel, DSLinCalModel, DSConformalizedModel
 
 Base.:*(λ::Real, d::Deterministic) = SparseCat([d.val], [λ])
 Base.:*(λ::Real, sc::SparseCat) = SparseCat(sc.vals, λ.*sc.probs)
@@ -25,11 +20,13 @@ function ⊗(sc_lhs::SparseCat, sc_rhs::SparseCat)
 end
 
 function POMDPs.transition(mdp::DroneSurveillanceMDP, s::DSState, a::DSPos) :: Union{Deterministic, SparseCat}
-    return transition(mdp, mdp.agent_strategy, mdp.transition_model, s, a)
+    T_model = DSPerfectModel(mdp.agent_strategy)
+    return transition(mdp, T_model, s, a)
 end
 
 # for perfect model
-function transition(mdp::DroneSurveillanceMDP, agent_strategy::DSAgentStrat, transition_model::DSPerfectModel, s::DSState, a::DSPos) :: Union{Deterministic, SparseCat}
+function transition(mdp::DroneSurveillanceMDP, transition_model::DSPerfectModel, s::DSState, a::DSPos) :: Union{Deterministic, SparseCat}
+    agent_strategy = transition_model.agent_strategy
     if isterminal(mdp, s) || s.quad == s.agent || s.quad == mdp.region_B
         return Deterministic(mdp.terminal_state) # the function is not type stable, returns either Deterministic or SparseCat
     else
@@ -42,23 +39,21 @@ function transition(mdp::DroneSurveillanceMDP, agent_strategy::DSAgentStrat, tra
         # then, move agent (independently)
         new_agent_distr = move_agent(mdp, agent_strategy, new_quad, s)
 
+        # combine probability distributions of quad and agent
         new_state_dist = let new_state_distr = new_quad_distr ⊗ new_agent_distr
             states = [DSState(q, a) for (q, a) in new_state_distr.vals]
             SparseCat(states, new_state_distr.probs)
         end
-
-        # TODO: probably we want to cull states with a probability < ϵ
-        # and then re-normalize
         return new_state_dist
     end
 end
 
-# for our linear and linear calibrated model
-function transition(mdp::DroneSurveillanceMDP, agent_strategy::DSAgentStrat, transition_model::Union{DSLinModel, DSLinCalModel}, s::DSState, a::DSPos) :: Union{Deterministic, SparseCat}
+# for linear and linear calibrated model
+function transition(mdp::DroneSurveillanceMDP, transition_model::Union{DSLinModel, DSLinCalModel}, s::DSState, a::DSPos) :: Union{Deterministic, SparseCat}
     if isterminal(mdp, s) || s.quad == s.agent || s.quad == mdp.region_B
         return Deterministic(mdp.terminal_state) # the function is not type stable, returns either Deterministic or SparseCat
     else
-        Δ_dist = predict(transition_model, s, a)
+        Δ_dist = predict(mdp, transition_model, s, a)
         new_state_dist = begin
             # the agent stays in place with chance 1/4
             new_states_with_movement = begin
@@ -77,13 +72,22 @@ function transition(mdp::DroneSurveillanceMDP, agent_strategy::DSAgentStrat, tra
     end
 end
 
-# for our conformalized model
-function transition(mdp::DroneSurveillanceMDP, agent_strategy::DSAgentStrat, transition_model::DSConformalizedModel, s::DSState, a::DSPos, λ::Real)
+# for conformalized model
+function transition(mdp::DroneSurveillanceMDP, transition_model::DSConformalizedModel, s::DSState, a::DSPos)
     if isterminal(mdp, s) || s.quad == s.agent || s.quad == mdp.region_B
-        return Deterministic(mdp.terminal_state) # the function is not type stable, returns either Deterministic or SparseCat
+        return Dict(
+            λ => Set([mdp.terminal_state])
+            for λ in keys(transition_model.conf_map)
+        )
     else
-        return predict(transition_model, s, a, λ)
+        return Dict(
+            λ => predict(mdp, transition_model, s, a, λ)
+            for λ in keys(transition_model.conf_map))
     end
+end
+
+function transition(mdp::DroneSurveillanceMDP, transition_model::DSRandomModel, s::DSState, a::DSPos)
+    return make_uniform_belief(mdp)
 end
 
 
@@ -132,4 +136,23 @@ function move_agent(mdp::DroneSurveillanceMDP, agent_strategy::DSAgentStrat, new
         SparseCat(new_agent_states, probs)
     end
     return (agent_strategy.p*perfect_agent) ⊕ ((1-agent_strategy.p)*random_agent)
+end
+
+function make_uniform_belief(mdp::DroneSurveillanceMDP)
+    nx, ny = mdp.size
+    b0 = begin
+        states = []
+        for ax in 1:nx,
+            ay in 1:ny,
+            dx in 1:nx,
+            dy in 1:ny
+
+            if [dx, dy] != [ax ay] && [dx, dy] != mdp.region_B
+                push!(states, DSState([dx, dy], [ax, ay]))
+            end
+        end
+        probs = normalize!(ones(length(states)), 1)
+        SparseCat(states, probs)
+    end
+    return b0
 end

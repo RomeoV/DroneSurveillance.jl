@@ -16,7 +16,8 @@ export
     PerfectCam,
     DroneSurveillanceMDP
 
-export DSAgentStrat, DSTransitionModel, DSPerfectModel, DSLinModel, DSLinCalModel, DSConformalizedModel
+export DSAgentStrat, DSTransitionModel, DSPerfectModel, DSLinModel, DSLinCalModel, DSConformalizedModel, DSRandomModel
+export make_uniform_belief
 
 const DSPos = SVector{2, Int64}
 
@@ -24,6 +25,11 @@ struct DSState
     quad::DSPos
     agent::DSPos
 end
+
+struct DSAgentStrat
+    p :: Real  # probability of making the best move
+end
+
 
 """
     QuadCam
@@ -65,8 +71,7 @@ struct PerfectCam end
     camera::M = M() # PerfectCam
     terminal_state::DSState = DSState([-1, -1], [-2, -2])
     discount_factor::Float64 = 0.99
-    agent_strategy = DSAgentStrat(0.)
-    transition_model = DSPerfectModel()
+    agent_strategy::DSAgentStrat = DSAgentStrat(0.5)
 end
 
 POMDPs.isterminal(mdp::DroneSurveillanceMDP, s::DSState) = s == mdp.terminal_state 

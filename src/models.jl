@@ -3,7 +3,10 @@ import POMDPTools: SparseCat
 import LinearAlgebra: normalize
 
 abstract type DSTransitionModel end
-struct DSPerfectModel <: DSTransitionModel end
+struct DSPerfectModel <: DSTransitionModel
+    agent_strategy :: DSAgentStrat
+end
+struct DSRandomModel <: DSTransitionModel end
 struct DSLinModel{T} <: DSTransitionModel where T <: Real
     θ :: AbstractMatrix{T}
     size :: Tuple{Int, Int}
@@ -17,15 +20,13 @@ struct DSConformalizedModel{T} <: DSTransitionModel where T <: Real
     conf_map :: Dict{Float64, Float64}
 end
 
-function prune_states(sc::SparseCat, ϵ_prune)
-    idx = sc.probs .>= ϵ_prune
-    SparseCat(sc.vals[idx], normalize(sc.probs[idx], 1))
-end
+function predict(mdp, model::DSLinModel, s::DSState, a::DSPos; ϵ_prune=1e-4, T=1.0)
+    nx, ny = mdp.size
+    Δ_states = [(Δx, Δy) for Δx in -nx:nx,
+                             Δy in -ny:ny][:]
+    push!(Δ_states, -2 .* mdp.size)  # this is the "code" for moving to the terminal state
 
-function predict(model::DSLinModel, s::DSState, a::DSPos; ϵ_prune=1e-4, T=1.0)
-    nx, ny = model.size
-    states = [(Δx, Δy) for Δx in -nx:nx,
-                           Δy in -ny:ny][:]
+    states = Δs_to_s.([mdp], [s], [a], Δ_states)
 
     Δx = s.agent.x - s.quad.x
     Δy = s.agent.y - s.quad.y
@@ -37,12 +38,12 @@ function predict(model::DSLinModel, s::DSState, a::DSPos; ϵ_prune=1e-4, T=1.0)
     return prune_states(SparseCat(states, probs), ϵ_prune)
 end
 
-predict(cal_model::DSLinCalModel, s::DSState, a::DSPos; ϵ_prune=1e-4) =
-    predict(cal_model.lin_model, s, a; ϵ_prune=ϵ_prune, T=cal_model.T)
+predict(mdp, cal_model::DSLinCalModel, s::DSState, a::DSPos; ϵ_prune=1e-4) =
+    predict(mdp, cal_model.lin_model, s, a; ϵ_prune=ϵ_prune, T=cal_model.T)
 
 # make a prediction set with the linear model
-function predict(model::Union{DSLinModel, DSLinCalModel}, s::DSState, a::DSPos, λ::Real; ϵ_prune=1e-4)
-    distr = predict(model, s, a; ϵ_prune=ϵ_prune)
+function predict(mdp, model::Union{DSLinModel, DSLinCalModel}, s::DSState, a::DSPos, λ::Real; ϵ_prune=1e-4)
+    distr = predict(mdp, model, s, a; ϵ_prune=ϵ_prune)
 
     # Shuffle predictions, keep adding to prediction set until just over or just under
     # desired probability (whichever has smaller "gap" to λ).
@@ -64,11 +65,13 @@ function predict(model::Union{DSLinModel, DSLinCalModel}, s::DSState, a::DSPos, 
     return pred_set
 end
 
-function predict(conf_model::DSConformalizedModel, s::DSState, a::DSPos, λ::Real; ϵ_prune=1e-4)
+function predict(mdp, conf_model::DSConformalizedModel, s::DSState, a::DSPos, λ::Real; ϵ_prune=1e-4)
     lin_model = conf_model.lin_model
     nx, ny = lin_model.size
-    states = [(Δx, Δy) for Δx in -nx:nx,
-                           Δy in -ny:ny][:]
+    Δ_states = [(Δx, Δy) for Δx in -nx:nx,
+                             Δy in -ny:ny][:]
+    push!(Δ_states, -2 .* mdp.size)  # this is the "code" for moving to the terminal state
+    states = Δs_to_s.(mdp, s, a, Δ_states)
 
     Δx = s.agent.x - s.quad.x
     Δy = s.agent.y - s.quad.y
@@ -80,4 +83,27 @@ function predict(conf_model::DSConformalizedModel, s::DSState, a::DSPos, λ::Rea
     idx = probs .>= (1-λ_hat)
     pred_set = states[idx] |> Set
     return pred_set
+end
+
+function prune_states(sc::SparseCat, ϵ_prune)
+    idx = sc.probs .>= ϵ_prune
+    SparseCat(sc.vals[idx], normalize(sc.probs[idx], 1))
+end
+
+function project_inbounds(mdp, s)
+    nx, ny = mdp.size
+    qx = clamp(s.quad.x, 1:nx)
+    qy = clamp(s.quad.y, 1:ny)
+    ax = clamp(s.agent.x, 1:nx)
+    ay = clamp(s.agent.y, 1:ny)
+    return DSState([qx, qy], [ax, ay])
+end
+
+function Δs_to_s(mdp, s, a, (Δx, Δy)::Tuple)
+    if (Δx, Δy) != -2 .* mdp.size
+        s_ = DSState((s.quad + a), s.quad + a + [Δx, Δy])
+        project_inbounds(mdp, s_)
+    else
+        mdp.terminal_state
+    end
 end
