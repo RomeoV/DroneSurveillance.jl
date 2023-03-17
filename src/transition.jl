@@ -57,8 +57,8 @@ function transition(mdp::DroneSurveillanceMDP, agent_strategy::DSAgentStrat, tra
     if isterminal(mdp, s) || s.quad == s.agent || s.quad == mdp.region_B
         return Deterministic(mdp.terminal_state) # the function is not type stable, returns either Deterministic or SparseCat
     else
-        Δx_dist, Δy_dist = predict(transition_model, s, a)
-        new_state_dist = let Δ_dist = Δx_dist ⊗ Δy_dist
+        Δ_dist = predict(transition_model, s, a)
+        new_state_dist = begin
             # the agent stays in place with chance 1/4
             new_states_with_movement = begin
                 new_states = [DSState(s.quad + a, s.quad + a + DSPos(Δ_quad_agent...))
