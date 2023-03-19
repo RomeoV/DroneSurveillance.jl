@@ -6,10 +6,12 @@ abstract type DSTransitionModel end
 struct DSPerfectModel <: DSTransitionModel
     agent_strategy :: DSAgentStrat
 end
-struct DSRandomModel <: DSTransitionModel end
+struct DSRandomModel <: DSTransitionModel
+    uniform_belief
+    DSRandomModel(mdp) = new(make_uniform_belief(mdp))
+end
 struct DSLinModel{T} <: DSTransitionModel where T <: Real
     θ :: AbstractMatrix{T}
-    size :: Tuple{Int, Int}
 end
 mutable struct DSLinCalModel{T} <: DSTransitionModel where T <: Real
     lin_model :: DSLinModel{T}
@@ -20,7 +22,7 @@ struct DSConformalizedModel{T} <: DSTransitionModel where T <: Real
     conf_map :: Dict{Float64, Float64}
 end
 
-function predict(mdp, model::DSLinModel, s::DSState, a::DSPos; ϵ_prune=1e-4, T=1.0)
+function predict(mdp, model::DSLinModel, s::DSState, a::DSPos; ϵ_prune=1e-2, T=1.0)
     nx, ny = mdp.size
     Δ_states = [(Δx, Δy) for Δx in -nx:nx,
                              Δy in -ny:ny][:]
@@ -38,11 +40,11 @@ function predict(mdp, model::DSLinModel, s::DSState, a::DSPos; ϵ_prune=1e-4, T=
     return prune_states(SparseCat(states, probs), ϵ_prune)
 end
 
-predict(mdp, cal_model::DSLinCalModel, s::DSState, a::DSPos; ϵ_prune=1e-4) =
-    predict(mdp, cal_model.lin_model, s, a; ϵ_prune=ϵ_prune, T=cal_model.T)
+predict(mdp, cal_model::DSLinCalModel, s::DSState, a::DSPos; ϵ_prune=1e-2) =
+    predict(mdp, cal_model.lin_model, s, a; ϵ_prune=ϵ_prune, T=cal_model.temperature)
 
 # make a prediction set with the linear model
-function predict(mdp, model::Union{DSLinModel, DSLinCalModel}, s::DSState, a::DSPos, λ::Real; ϵ_prune=1e-4)
+function predict(mdp, model::Union{DSLinModel, DSLinCalModel}, s::DSState, a::DSPos, λ::Real; ϵ_prune=1e-2)
     distr = predict(mdp, model, s, a; ϵ_prune=ϵ_prune)
 
     # Shuffle predictions, keep adding to prediction set until just over or just under
@@ -65,13 +67,13 @@ function predict(mdp, model::Union{DSLinModel, DSLinCalModel}, s::DSState, a::DS
     return pred_set
 end
 
-function predict(mdp, conf_model::DSConformalizedModel, s::DSState, a::DSPos, λ::Real; ϵ_prune=1e-4)
+function predict(mdp, conf_model::DSConformalizedModel, s::DSState, a::DSPos, λ::Real; _ϵ_prune=1e-2)
     lin_model = conf_model.lin_model
-    nx, ny = lin_model.size
+    nx, ny = mdp.size
     Δ_states = [(Δx, Δy) for Δx in -nx:nx,
                              Δy in -ny:ny][:]
     push!(Δ_states, -2 .* mdp.size)  # this is the "code" for moving to the terminal state
-    states = Δs_to_s.(mdp, s, a, Δ_states)
+    states = Δs_to_s.([mdp], [s], [a], Δ_states)
 
     Δx = s.agent.x - s.quad.x
     Δy = s.agent.y - s.quad.y
