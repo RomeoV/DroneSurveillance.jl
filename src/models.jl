@@ -12,7 +12,9 @@ struct DSRandomModel <: DSTransitionModel
 end
 struct DSLinModel{T} <: DSTransitionModel where T <: Real
     θ :: AbstractMatrix{T}
+    states_buffer :: MVector{21*21+1, DSState}
 end
+DSLinModel(θ) = DSLinModel{eltype(θ)}(θ, MVector{21*21+1, DSState}(undef))
 mutable struct DSLinCalModel{T} <: DSTransitionModel where T <: Real
     lin_model :: DSLinModel{T}
     temperature :: Float64
@@ -24,11 +26,11 @@ end
 
 function predict(mdp, model::DSLinModel, s::DSState, a::DSPos; ϵ_prune=1e-4, T=1.0)
     nx, ny = mdp.size
-    Δ_states = [(Δx, Δy) for Δx in -nx:nx,
-                             Δy in -ny:ny][:]
-    push!(Δ_states, -2 .* mdp.size)  # this is the "code" for moving to the terminal state
-
-    states = Δs_to_s.([mdp], [s], [a], Δ_states)
+    states = model.states_buffer
+    for (i, (Δx, Δy)) in enumerate(product(-nx:nx, -ny:ny))
+        states[i] = Δs_to_s(mdp, s, a, (Δx, Δy))
+    end
+    states[end] = mdp.terminal_state
 
     Δx = s.agent.x - s.quad.x
     Δy = s.agent.y - s.quad.y
@@ -69,11 +71,13 @@ end
 
 function predict(mdp, conf_model::DSConformalizedModel, s::DSState, a::DSPos, λ::Real; _ϵ_prune=1e-4)
     lin_model = conf_model.lin_model
+    states = lin_model.states_buffer
     nx, ny = mdp.size
-    Δ_states = [(Δx, Δy) for Δx in -nx:nx,
-                             Δy in -ny:ny][:]
-    push!(Δ_states, -2 .* mdp.size)  # this is the "code" for moving to the terminal state
-    states = Δs_to_s.([mdp], [s], [a], Δ_states)
+    # push!(Δ_states, -2 .* mdp.size)  # this is the "code" for moving to the terminal state
+    for (i, (Δx, Δy)) in enumerate(product(-nx:nx, -ny:ny))
+        states[i] = Δs_to_s(mdp, s, a, (Δx, Δy))
+    end
+    states[end] = mdp.terminal_state
 
     Δx = s.agent.x - s.quad.x
     Δy = s.agent.y - s.quad.y
@@ -92,16 +96,21 @@ function prune_states(sc::SparseCat, ϵ_prune)
     SparseCat(sc.vals[idx], normalize(sc.probs[idx], 1))
 end
 
-function project_inbounds(mdp, s)
+# this function turns out to slow us down quite a bit...
+function project_inbounds(mdp, s::DSState)
     nx, ny = mdp.size
-    qx = clamp(s.quad.x, 1:nx)
-    qy = clamp(s.quad.y, 1:ny)
-    ax = clamp(s.agent.x, 1:nx)
-    ay = clamp(s.agent.y, 1:ny)
-    return DSState([qx, qy], [ax, ay])
+    @assert nx == ny
+    if s.quad.x ∈ 1:nx &&
+       s.quad.y ∈ 1:ny &&
+       s.agent.x ∈ 1:nx &&
+       s.agent.y ∈ 1:ny
+        return s
+    else
+        return DSState(clamp.(s.quad, 1, nx), clamp.(s.agent, 1, nx))
+    end
 end
 
-function Δs_to_s(mdp, s, a, (Δx, Δy)::Tuple)
+function Δs_to_s(mdp, s, a, (Δx, Δy)::Tuple)::DSState
     if (Δx, Δy) != -2 .* mdp.size
         s_ = DSState((s.quad + a), s.quad + a + [Δx, Δy])
         project_inbounds(mdp, s_)

@@ -58,7 +58,7 @@ function transition(mdp::DroneSurveillanceMDP, transition_model::Union{DSLinMode
 end
 
 # for conformalized model
-function transition(mdp::DroneSurveillanceMDP, transition_model::DSConformalizedModel, s::DSState, a::DSPos)
+function transition(mdp::DroneSurveillanceMDP, transition_model::DSConformalizedModel, s::DSState, a::DSPos)::Dict{<:Real, Set{DSState}}
     if isterminal(mdp, s) || s.quad == s.agent || s.quad == mdp.region_B
         return Dict(
             λ => Set([mdp.terminal_state])
