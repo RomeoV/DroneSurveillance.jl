@@ -67,23 +67,18 @@ end
 
 function predict(mdp, conf_model::DSConformalizedModel, s::DSState, a::DSPos, λ::Real; _ϵ_prune=1e-4)
     lin_model = conf_model.lin_model
-    states = lin_model.states_buffer
     nx, ny = mdp.size
-    # push!(Δ_states, -2 .* mdp.size)  # this is the "code" for moving to the terminal state
-    for (i, (Δx, Δy)) in enumerate(product(-nx:nx, -ny:ny))
-        states[i] = Δs_to_s(mdp, s, a, (Δx, Δy))
-    end
-    states[end] = mdp.terminal_state
 
     Δx = s.agent.x - s.quad.x
     Δy = s.agent.y - s.quad.y
     ξ = [Δx, Δy, a.x, a.y, 1]
     softmax(x) = exp.(x) / sum(exp.(x))
     probs = softmax(lin_model.θ * ξ)
-    λ_hat = conf_model.conf_map[λ]
 
-    idx = probs .>= (1-λ_hat)
-    pred_set = states[idx] |> Set
+    λ_hat = conf_model.conf_map[λ]
+    mask = probs .>= (1-λ_hat)
+    states = Δs_to_s_from_mask(mdp, s, a, mask, (nx, ny))
+    pred_set = states |> Set
     return pred_set
 end
 
@@ -110,6 +105,21 @@ function Δs_to_s(mdp, s, a, probs, (nx, ny), ϵ_prune)
                             clamp.(s.quad + a + DSPos(Δx, Δy), 1, nx)))
     end
     if probs[end] >= ϵ_prune
+        push!(states, mdp.terminal_state)
+    end
+    return states
+end
+
+function Δs_to_s_from_mask(mdp, s, a, mask, (nx, ny))
+    @assert nx == ny "Currently, clamping requrires a square board."
+    states = DSState[]; sizehint!(states, sum(mask))
+    # we prune states with small probability
+    for ((Δx, Δy), m) in zip(product(-nx:nx, -ny:ny), mask)
+        !(m) && continue
+        push!(states, DSState(clamp.(s.quad + a, 1, nx),
+                              clamp.(s.quad + a + DSPos(Δx, Δy), 1, nx)))
+    end
+    if mask[end]
         push!(states, mdp.terminal_state)
     end
     return states
