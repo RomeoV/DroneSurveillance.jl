@@ -25,7 +25,7 @@ function POMDPs.transition(mdp::DroneSurveillanceMDP, s::DSState, a::DSPos) :: U
 end
 
 # for perfect model
-function transition(mdp::DroneSurveillanceMDP, transition_model::DSPerfectModel, s::DSState, a::DSPos) :: Union{Deterministic, SparseCat}
+function transition(mdp::DroneSurveillanceMDP, transition_model::DSPerfectModel, s::DSState, a::DSPos; ϵ_prune=1e-4) :: Union{Deterministic, SparseCat}
     agent_strategy = transition_model.agent_strategy
     if isterminal(mdp, s) || s.quad == s.agent || s.quad == mdp.region_B
         return Deterministic(mdp.terminal_state) # the function is not type stable, returns either Deterministic or SparseCat
@@ -44,21 +44,21 @@ function transition(mdp::DroneSurveillanceMDP, transition_model::DSPerfectModel,
             states = [DSState(q, a) for (q, a) in new_state_distr.vals]
             SparseCat(states, new_state_distr.probs)
         end
-        return new_state_dist
+        return prune_states(new_state_dist, ϵ_prune)
     end
 end
 
 # for linear and linear calibrated model
-function transition(mdp::DroneSurveillanceMDP, transition_model::Union{DSLinModel, DSLinCalModel}, s::DSState, a::DSPos) :: Union{Deterministic, SparseCat}
+function transition(mdp::DroneSurveillanceMDP, transition_model::Union{DSLinModel, DSLinCalModel}, s::DSState, a::DSPos; ϵ_prune=1e-4) :: Union{Deterministic, SparseCat}
     if isterminal(mdp, s) || s.quad == s.agent || s.quad == mdp.region_B
         return Deterministic(mdp.terminal_state) # the function is not type stable, returns either Deterministic or SparseCat
     else
-        predict(mdp, transition_model, s, a)
+        predict(mdp, transition_model, s, a; ϵ_prune=ϵ_prune)
     end
 end
 
 # for conformalized model
-function transition(mdp::DroneSurveillanceMDP, transition_model::DSConformalizedModel, s::DSState, a::DSPos)::Dict{<:Real, Set{DSState}}
+function transition(mdp::DroneSurveillanceMDP, transition_model::DSConformalizedModel, s::DSState, a::DSPos; ϵ_prune=1e-4)::Dict{<:Real, Set{DSState}}
     if isterminal(mdp, s) || s.quad == s.agent || s.quad == mdp.region_B
         return Dict(
             λ => Set([mdp.terminal_state])
@@ -71,7 +71,7 @@ function transition(mdp::DroneSurveillanceMDP, transition_model::DSConformalized
     end
 end
 
-function transition(mdp::DroneSurveillanceMDP, transition_model::DSRandomModel, s::DSState, a::DSPos)
+function transition(mdp::DroneSurveillanceMDP, transition_model::DSRandomModel, s::DSState, a::DSPos; ϵ_prune=1e-4)
     b0 = transition_model.uniform_belief
     idx = rand(eachindex(b0.probs), 10)
     SparseCat(b0.vals[idx], normalize(b0.probs[idx], 1))
