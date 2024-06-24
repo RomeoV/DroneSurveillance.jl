@@ -1,11 +1,7 @@
 import Base: product
 import Base
-using LinearAlgebra: normalize, normalize!
-
-struct DSAgentStrat
-    p :: Real
-end
-should_do_perfect_agent_step(agent::DSAgentStrat) = rand() <= agent.p
+import LinearAlgebra: normalize, normalize!
+import DroneSurveillance: DSTransitionModel, DSPerfectModel, DSLinModel, DSLinCalModel, DSConformalizedModel
 
 Base.:*(λ::Real, d::Deterministic) = SparseCat([d.val], [λ])
 Base.:*(λ::Real, sc::SparseCat) = SparseCat(sc.vals, λ.*sc.probs)
@@ -23,142 +19,14 @@ function ⊗(sc_lhs::SparseCat, sc_rhs::SparseCat)
     return SparseCat(vals[:], probs[:])
 end
 
-abstract type DSTransitionModel end
-struct DSPerfectModel <: DSTransitionModel end
-struct DSApproximateModel <: DSTransitionModel end
-struct DSLinModel{T} <: DSTransitionModel where T <: Real
-    θ_Δx :: AbstractMatrix{T}
-    θ_Δy :: AbstractMatrix{T}
-end
-mutable struct DSLinCalModel{T} <: DSTransitionModel where T <: Real
-    lin_model :: DSLinModel{T}
-    temperature :: Float64
-end
-struct DSConformalizedModel{T} <: DSTransitionModel where T <: Real
-    lin_model :: DSLinModel{T}
-    conf_map_Δx :: Dict{Float64, Float64}
-    conf_map_Δy :: Dict{Float64, Float64}
-end
-
-function prune_states(sc::SparseCat, ϵ_prune)
-    idx = sc.probs .>= ϵ_prune
-    SparseCat(sc.vals[idx], normalize(sc.probs[idx], 1))
-end
-
-# TODO maybe move this to the other project
-function predict(model::DSLinModel, s::DSState, a::DSPos; ϵ_prune=1e-4, T=1.0)
-    nx, ny = size.([model.θ_Δx, model.θ_Δy], 1) .÷ 2
-    states_Δx, states_Δy = (-nx:nx, -ny:ny) .|> collect
-
-    Δx = s.agent.x - s.quad.x
-    Δy = s.agent.y - s.quad.y
-    ξ = [Δx, Δy, a.x, a.y, 1]
-    softmax(x) = exp.(x./T) / sum(exp.(x./T))
-    probs_Δx, probs_Δy = (softmax(model.θ_Δx * ξ),
-                          softmax(model.θ_Δy * ξ))
-
-    # we prune states with small probability
-    return (prune_states(SparseCat(states_Δx, probs_Δx), ϵ_prune),
-            prune_states(SparseCat(states_Δy, probs_Δy), ϵ_prune))
-end
-
-function predict(cal_model::DSLinCalModel, s::DSState, a::DSPos; ϵ_prune=1e-4)
-    lin_model = cal_model.lin_model
-    T = cal_model.temperature
-
-    nx, ny = size.([lin_model.θ_Δx, lin_model.θ_Δy], 1) .÷ 2
-    states_Δx, states_Δy = (-nx:nx, -ny:ny) .|> collect
-
-    Δx = s.agent.x - s.quad.x
-    Δy = s.agent.y - s.quad.y
-    ξ = [Δx, Δy, a.x, a.y, 1]
-    softmax(x) = exp.(x / T) / sum(exp.(x / T))
-    probs_Δx, probs_Δy = (softmax(lin_model.θ_Δx * ξ),
-                          softmax(lin_model.θ_Δy * ξ))
-
-    # we prune states with small probability
-    return (prune_states(SparseCat(states_Δx, probs_Δx), ϵ_prune),
-            prune_states(SparseCat(states_Δy, probs_Δy), ϵ_prune))
-end
-
-# make a prediction set with the linear model
-function predict(model::DSLinModel, s::DSState, a::DSPos, λ::Real; ϵ_prune=1e-4)
-    lhs_distr, rhs_distr = predict(model, s, a; ϵ_prune=ϵ_prune)
-
-    # Shuffle predictions, keep adding to prediction set until just over or just under
-    # desired probability (whichever has smaller "gap" to λ).
-    lhs_pred_set, rhs_pred_set = Tuple([begin
-            perm = shuffle(eachindex(distr.probs))
-            p_perm = distr.probs[perm]
-            p_cum = cumsum(p_perm)
-
-            idx = begin
-                idx = findfirst(>=(λ), p_cum)
-                gap_hi = p_cum[idx] - λ
-                gap_lo = λ - get(p_cum, idx-1, 0)
-                (gap_hi < gap_lo ? idx : idx-1)
-            end
-
-            val_perm = distr.vals[perm]
-            Set(val_perm[1:idx])
-        end
-        for distr in [lhs_distr, rhs_distr]
-    ])
-    return lhs_pred_set, rhs_pred_set
-end
-
-function predict(cal_model::DSLinCalModel, s::DSState, a::DSPos, λ::Real; ϵ_prune=1e-4)
-    lhs_distr, rhs_distr = predict(cal_model, s, a; ϵ_prune=ϵ_prune)
-
-    # Shuffle predictions, keep adding to prediction set until just over or just under
-    # desired probability (whichever has smaller "gap" to λ).
-    lhs_pred_set, rhs_pred_set = Tuple([begin
-            perm = shuffle(eachindex(distr.probs))
-            p_perm = distr.probs[perm]
-            p_cum = cumsum(p_perm)
-
-            idx = begin
-                idx = findfirst(>=(λ), p_cum)
-                gap_hi = p_cum[idx] - λ
-                gap_lo = λ - get(p_cum, idx-1, 0)
-                (gap_hi < gap_lo ? idx : idx-1)
-            end
-
-            val_perm = distr.vals[perm]
-            Set(val_perm[1:idx])
-        end
-        for distr in [lhs_distr, rhs_distr]
-    ])
-    return lhs_pred_set, rhs_pred_set
-end
-
-function predict(conf_model::DSConformalizedModel, s::DSState, a::DSPos, λ::Real; ϵ_prune=1e-4)
-    lin_model = conf_model.lin_model
-    nx, ny = size.([lin_model.θ_Δx, lin_model.θ_Δy], 1) .÷ 2
-    states = (-nx:nx, -ny:ny) .|> collect
-
-    Δx = s.agent.x - s.quad.x
-    Δy = s.agent.y - s.quad.y
-    ξ = [Δx, Δy, a.x, a.y, 1]
-    softmax(x) = exp.(x) / sum(exp.(x))
-    probs = (softmax(lin_model.θ_Δx * ξ), softmax(lin_model.θ_Δy * ξ))
-    λ_hat_Δx = conf_model.conf_map_Δx[λ]
-    λ_hat_Δy = conf_model.conf_map_Δy[λ]
-
-    idx_Δx = probs[1] .>= (1-λ_hat_Δx)
-    idx_Δy = probs[2] .>= (1-λ_hat_Δy)
-    pred_set_Δx = states[1][idx_Δx] |> Set
-    pred_set_Δy = states[2][idx_Δy] |> Set
-    return (pred_set_Δx, pred_set_Δy)
-end
-
-
 function POMDPs.transition(mdp::DroneSurveillanceMDP, s::DSState, a::DSPos) :: Union{Deterministic, SparseCat}
-    return transition(mdp, mdp.agent_strategy, mdp.transition_model, s, a)
+    T_model = DSPerfectModel(mdp.agent_strategy)
+    return transition(mdp, T_model, s, a)
 end
 
 # for perfect model
-function transition(mdp::DroneSurveillanceMDP, agent_strategy::DSAgentStrat, transition_model::DSPerfectModel, s::DSState, a::DSPos) :: Union{Deterministic, SparseCat}
+function transition(mdp::DroneSurveillanceMDP, transition_model::DSPerfectModel, s::DSState, a::DSPos; ϵ_prune=1e-4) :: Union{Deterministic, SparseCat}
+    agent_strategy = transition_model.agent_strategy
     if isterminal(mdp, s) || s.quad == s.agent || s.quad == mdp.region_B
         return Deterministic(mdp.terminal_state) # the function is not type stable, returns either Deterministic or SparseCat
     else
@@ -171,48 +39,42 @@ function transition(mdp::DroneSurveillanceMDP, agent_strategy::DSAgentStrat, tra
         # then, move agent (independently)
         new_agent_distr = move_agent(mdp, agent_strategy, new_quad, s)
 
+        # combine probability distributions of quad and agent
         new_state_dist = let new_state_distr = new_quad_distr ⊗ new_agent_distr
             states = [DSState(q, a) for (q, a) in new_state_distr.vals]
             SparseCat(states, new_state_distr.probs)
         end
-
-        # TODO: probably we want to cull states with a probability < ϵ
-        # and then re-normalize
-        return new_state_dist
+        return prune_states(new_state_dist, ϵ_prune)
     end
 end
 
-# for our linear and linear calibrated model
-function transition(mdp::DroneSurveillanceMDP, agent_strategy::DSAgentStrat, transition_model::Union{DSLinModel, DSLinCalModel}, s::DSState, a::DSPos) :: Union{Deterministic, SparseCat}
+# for linear and linear calibrated model
+function transition(mdp::DroneSurveillanceMDP, transition_model::Union{DSLinModel, DSLinCalModel}, s::DSState, a::DSPos; ϵ_prune=1e-4) :: Union{Deterministic, SparseCat}
     if isterminal(mdp, s) || s.quad == s.agent || s.quad == mdp.region_B
         return Deterministic(mdp.terminal_state) # the function is not type stable, returns either Deterministic or SparseCat
     else
-        Δx_dist, Δy_dist = predict(transition_model, s, a)
-        new_state_dist = let Δ_dist = Δx_dist ⊗ Δy_dist
-            # the agent stays in place with chance 1/4
-            new_states_with_movement = begin
-                new_states = [DSState(s.quad + a, s.quad + a + DSPos(Δ_quad_agent...))
-                              for Δ_quad_agent in Δ_dist.vals]
-                SparseCat(new_states, Δ_dist.probs)
-            end
-            new_states_no_movement = begin
-                new_states = [DSState(s.quad, s.quad + DSPos(Δ_quad_agent...))
-                              for Δ_quad_agent in Δ_dist.vals]
-                SparseCat(new_states, Δ_dist.probs)
-            end
-            (3//4 * new_states_with_movement ⊕ 1//4 * new_states_no_movement)
-        end
-        return new_state_dist
+        predict(mdp, transition_model, s, a; ϵ_prune=ϵ_prune)
     end
 end
 
-# for our conformalized model
-function transition(mdp::DroneSurveillanceMDP, agent_strategy::DSAgentStrat, transition_model::DSConformalizedModel, s::DSState, a::DSPos, λ::Real)
+# for conformalized model
+function transition(mdp::DroneSurveillanceMDP, transition_model::DSConformalizedModel, s::DSState, a::DSPos; ϵ_prune=1e-4)::Dict{<:Real, Set{DSState}}
     if isterminal(mdp, s) || s.quad == s.agent || s.quad == mdp.region_B
-        return Deterministic(mdp.terminal_state) # the function is not type stable, returns either Deterministic or SparseCat
+        return Dict(
+            λ => Set([mdp.terminal_state])
+            for λ in keys(transition_model.conf_map)
+        )
     else
-        return predict(transition_model, s, a, λ)
+        return Dict(
+            λ => predict(mdp, transition_model, s, a, λ)
+            for λ in keys(transition_model.conf_map))
     end
+end
+
+function transition(mdp::DroneSurveillanceMDP, transition_model::DSRandomModel, s::DSState, a::DSPos; ϵ_prune=1e-4)
+    b0 = transition_model.uniform_belief
+    idx = rand(eachindex(b0.probs), 10)
+    SparseCat(b0.vals[idx], normalize(b0.probs[idx], 1))
 end
 
 
@@ -261,4 +123,23 @@ function move_agent(mdp::DroneSurveillanceMDP, agent_strategy::DSAgentStrat, new
         SparseCat(new_agent_states, probs)
     end
     return (agent_strategy.p*perfect_agent) ⊕ ((1-agent_strategy.p)*random_agent)
+end
+
+function make_uniform_belief(mdp::DroneSurveillanceMDP)
+    nx, ny = mdp.size
+    b0 = begin
+        states = []
+        for ax in 1:nx,
+            ay in 1:ny,
+            dx in 1:nx,
+            dy in 1:ny
+
+            if [dx, dy] != [ax ay] && [dx, dy] != mdp.region_B
+                push!(states, DSState([dx, dy], [ax, ay]))
+            end
+        end
+        probs = normalize!(ones(length(states)), 1)
+        SparseCat(states, probs)
+    end
+    return b0
 end
